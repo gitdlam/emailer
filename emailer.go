@@ -9,8 +9,8 @@ import (
 	"time"
 	//	"bytes"
 	"fmt"
+	"os/exec"
 	"path/filepath"
-
 	//	"io/ioutil"
 	//	"log"
 	"net/http"
@@ -230,6 +230,8 @@ func getCronTabs() []crontabType {
 		crontab.output = rows[i][7]
 		crontab.recipients = rows[i][8]
 		crontab.emailFrom = rows[i][9]
+		crontab.subject = rows[i][10]
+		crontab.body = rows[i][11]
 		crontabs = append(crontabs, crontab)
 		//		log.Println(crontab.minute, crontab.hour, crontab.dayOfMonth, crontab.month, crontab.dayOfWeek, crontab.translation, crontab.cmd, crontab.output, crontab.emails)
 
@@ -239,29 +241,7 @@ func getCronTabs() []crontabType {
 }
 
 func main() {
-	var crontabs []crontabType
-
-	crontabs = getCronTabs()
-
-	for _, c := range crontabs {
-		nextTime := time.Now()
-		expr := cronexpr.MustParse(strings.Join([]string{c.minute, c.hour, c.dayOfMonth, c.month, c.dayOfWeek}, " "))
-		for nextTime.Before(time.Now().AddDate(0, 0, 7)) {
-			nextTime = expr.Next(nextTime)
-			//			log.Println(nextTime)
-			//			time.Sleep(time.Second)
-			if nextTime.IsZero() || nextTime.After(time.Now().AddDate(0, 0, 7)) {
-				break
-			}
-
-			entries = append(entries, entryType{planned: nextTime, translation: c.translation, cmd: c.cmd, output: c.output, recipients: c.recipients, emailFrom: c.emailFrom, subject: c.subject, body: c.body})
-		}
-
-	}
-
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].planned.Format("200601021504") < entries[j].planned.Format("200601021504")
-	})
+	refreshSchedule()
 
 	go monitorSchedule()
 
@@ -269,17 +249,62 @@ func main() {
 
 }
 
+func refreshSchedule() {
+	entriesLock.Lock()
+	var crontabs []crontabType
+	entries = nil
+	crontabs = getCronTabs()
+
+	for _, c := range crontabs {
+		nextTime := time.Now()
+		expr := cronexpr.MustParse(strings.Join([]string{c.minute, c.hour, c.dayOfMonth, c.month, c.dayOfWeek}, " "))
+		for nextTime.Before(time.Now().AddDate(0, 0, 60)) {
+			nextTime = expr.Next(nextTime)
+			//			log.Println(nextTime)
+			//			time.Sleep(time.Second)
+			if nextTime.IsZero() || nextTime.After(time.Now().AddDate(0, 0, 60)) {
+				break
+			}
+
+			entries = append(entries, entryType{planned: nextTime, translation: c.translation, cmd: c.cmd, output: c.output, recipients: c.recipients, emailFrom: c.emailFrom, subject: c.subject, body: c.body})
+		}
+
+	}
+	expr := cronexpr.MustParse(strings.Join([]string{"10", "3", "*", "*", "*"}, " "))
+	entries = append(entries, entryType{planned: expr.Next(time.Now().Add(time.Minute)), translation: "Refresh schedule from config file", subject: "refresh_schedule"})
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].planned.Format("200601021504") < entries[j].planned.Format("200601021504")
+	})
+	entriesLock.Unlock()
+}
+
 func monitorSchedule() {
+	var refresh bool
 	for {
 		entriesLock.Lock()
 		for i, e := range entries {
-			if !e.done && time.Now().After(e.planned) {
+			if !e.done && time.Now().After(e.planned) && e.subject != "refresh_schedule" {
+				cmd := exec.Command("cmd", "/c", e.cmd)
+				// log.Println("start cmd")
+				cmd.Run()
+				// log.Println("finished cmd")
 				sendEmail(e.emailFrom, e.recipients, e.subject, e.body, e.output)
+				// log.Println("finished email")
 				entries[i].done = true
+			}
+			if time.Now().After(e.planned) && e.subject == "refresh_schedule" {
+				refresh = true
 			}
 		}
 		entriesLock.Unlock()
-		time.Sleep(time.Second * 15)
+
+		if refresh {
+			refreshSchedule()
+			refresh = false
+		} else {
+			time.Sleep(time.Second * 15)
+		}
+
 	}
 }
 
