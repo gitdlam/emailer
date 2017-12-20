@@ -241,10 +241,11 @@ func getCronTabs() []crontabType {
 }
 
 func main() {
+	log.Printf("Reading config from emailer.xlsx... ")
 	refreshSchedule()
-
+	log.Println("Done.")
 	go monitorSchedule()
-
+	log.Println("See upcoming schedules via http://localhost:1777/list")
 	HTTPServe()
 
 }
